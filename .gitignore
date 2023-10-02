@@ -1,0 +1,7 @@
+/pytracking/pytracking/networks/dimp50.pth
+/pytracking/pytracking/networks/prdimp50.pth.tar
+/pytracking/pytracking/networks/trdimp_net.pth.tar
+**/__pycache__/
+/.install.sh.swp
+/INSTALL_win.md
+.idea/

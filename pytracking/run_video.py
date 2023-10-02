@@ -31,6 +31,7 @@ def main():
 
     args = parser.parse_args()
 
+
     run_video(args.tracker_name, args.tracker_param,args.videofile, args.optional_box, args.debug, args.save_results)
 
 

@@ -1,5 +1,7 @@
 import importlib
 import os
+import threading
+
 import numpy as np
 from collections import OrderedDict
 from pytracking.evaluation.environment import env_settings
@@ -14,14 +16,14 @@ from ltr.data.bounding_box_utils import masks_to_bboxes
 from pytracking.evaluation.multi_object_wrapper import MultiObjectWrapper
 from pathlib import Path
 import torch
-
+from multiprocessing import Process, Queue, Manager
 
 _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
                         7: (123, 123, 123), 8: (255, 128, 0), 9: (128, 0, 255)}
 
 
-def trackerlist(name: str, parameter_name: str, run_ids = None, display_name: str = None):
+def trackerlist(name: str, parameter_name: str, run_ids=None, display_name: str = None):
     """Generate list of trackers.
     args:
         name: Name of tracking method.
@@ -31,10 +33,10 @@ def trackerlist(name: str, parameter_name: str, run_ids = None, display_name: st
     """
     if run_ids is None or isinstance(run_ids, int):
         run_ids = [run_ids]
-    return [Tracker(name, parameter_name, run_id, display_name) for run_id in run_ids]
+    return [TrackerMV(name, parameter_name, run_id, display_name) for run_id in run_ids]
 
 
-class Tracker:
+class TrackerMV:
     """Wraps the tracker for evaluation and running purposes.
     args:
         name: Name of tracking method.
@@ -57,7 +59,8 @@ class Tracker:
             self.segmentation_dir = '{}/{}/{}'.format(env.segmentation_path, self.name, self.parameter_name)
         else:
             self.results_dir = '{}/{}/{}_{:03d}'.format(env.results_path, self.name, self.parameter_name, self.run_id)
-            self.segmentation_dir = '{}/{}/{}_{:03d}'.format(env.segmentation_path, self.name, self.parameter_name, self.run_id)
+            self.segmentation_dir = '{}/{}/{}_{:03d}'.format(env.segmentation_path, self.name, self.parameter_name,
+                                                             self.run_id)
 
         tracker_module_abspath = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tracker', self.name))
         if os.path.isdir(tracker_module_abspath):
@@ -67,7 +70,6 @@ class Tracker:
             self.tracker_class = None
 
         self.visdom = None
-
 
     def _init_visdom(self, visdom_info, debug):
         visdom_info = {} if visdom_info is None else visdom_info
@@ -96,7 +98,6 @@ class Tracker:
 
             elif data['key'] == 'ArrowRight' and self.pause_mode:
                 self.step = True
-
 
     def create_tracker(self, params):
         tracker = self.tracker_class(params)
@@ -257,13 +258,38 @@ class Tracker:
 
         return output
 
-    def run_video_generic(self, debug=None, visdom_info=None, videofilepath=None, optional_box=None, save_results=False, web_cam_id=None):
+    def run_video_generic_mv(self, debug=None, visdom_info=None, videofilepaths=None, optional_box=None,
+                             save_results=False, web_cam_ids=None):
+        queue = Queue(maxsize=1000)
+        if videofilepaths is None:
+            mp = list()
+            for id in web_cam_ids:
+                p = Process(target=self.run_video_generic, args=(queue,),
+                            kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id},
+                            daemon=True)
+                p.start()
+                mp.append(p)
+
+            while True:
+                if not queue.empty():
+                    print("hei")
+                    item = queue.get()
+                    print("Object id: {}, state: {}".format(item[0], item[1]))
+                if not all(p.is_alive() for p in mp):
+                    break
+            for p in mp:
+                p.join()
+            print("All processes finished")
+
+    def run_video_generic(self, queue, debug=None, visdom_info=None, videofilepath=None, optional_box=None,
+                          save_results=False, web_cam_id=None):
         """Run the tracker with the webcam or a provided video file.
         args:
             debug: Debug level.
         """
 
         params = self.get_parameters()
+
         debug_ = debug
         if debug is None:
             debug_ = getattr(params, 'debug', 0)
@@ -338,7 +364,6 @@ class Tracker:
             if web_cam_id is None:
                 cap = cv.VideoCapture(0)
             else:
-                print(web_cam_id)
                 cap = cv.VideoCapture(web_cam_id)
 
         next_object_id = 1
@@ -351,9 +376,9 @@ class Tracker:
             assert len(optional_box) == 4, "valid box's format is [x,y,w,h]"
 
             out = tracker.initialize(frame, {'init_bbox': OrderedDict({next_object_id: optional_box}),
-                                       'init_object_ids': [next_object_id, ],
-                                       'object_ids': [next_object_id, ],
-                                       'sequence_object_ids': [next_object_id, ]})
+                                             'init_object_ids': [next_object_id, ],
+                                             'object_ids': [next_object_id, ],
+                                             'sequence_object_ids': [next_object_id, ]})
 
             prev_output = OrderedDict(out)
 
@@ -415,13 +440,15 @@ class Tracker:
                                      _tracker_disp_colors[obj_id], 5)
                         if save_results:
                             output_boxes[obj_id].append(state)
-
+                        if not queue.full():
+                            queue.put((obj_id, state))
+                        else:
+                            print("Error: queue full")
             # Put text
             font_color = (255, 255, 255)
             msg = "Select target(s). Press 'r' to reset or 'q' to quit."
             cv.rectangle(frame_disp, (5, 5), (630, 40), (50, 50, 50), -1)
             cv.putText(frame_disp, msg, (10, 30), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
-
             if videofilepath is not None:
                 msg = "Press SPACE to pause/resume the video."
                 cv.rectangle(frame_disp, (5, 50), (530, 90), (50, 50, 50), -1)
@@ -462,7 +489,6 @@ class Tracker:
                 tracked_bb = np.array(bbox).astype(int)
                 bbox_file = '{}_{}.txt'.format(base_results_path, obj_id)
                 np.savetxt(bbox_file, tracked_bb, delimiter='\t', fmt='%d')
-
 
     def run_vot2020(self, debug=None, visdom_info=None):
         params = self.get_parameters()
@@ -555,7 +581,6 @@ class Tracker:
             elif tracker.params.visualization:
                 self.visualize(image, out['target_bbox'], segmentation)
 
-
     def run_vot(self, debug=None, visdom_info=None):
         params = self.get_parameters()
         params.tracker_name = self.name
@@ -632,13 +657,11 @@ class Tracker:
         params = param_module.parameters()
         return params
 
-
     def init_visualization(self):
         self.pause_mode = False
         self.fig, self.ax = plt.subplots(1)
         self.fig.canvas.mpl_connect('key_press_event', self.press)
         plt.tight_layout()
-
 
     def visualize(self, image, state, segmentation=None):
         self.ax.cla()
@@ -661,7 +684,8 @@ class Tracker:
 
         if getattr(self, 'gt_state', None) is not None:
             gt_state = self.gt_state
-            rect = patches.Rectangle((gt_state[0], gt_state[1]), gt_state[2], gt_state[3], linewidth=1, edgecolor='g', facecolor='none')
+            rect = patches.Rectangle((gt_state[0], gt_state[1]), gt_state[2], gt_state[3], linewidth=1, edgecolor='g',
+                                     facecolor='none')
             self.ax.add_patch(rect)
         self.ax.set_axis_off()
         self.ax.axis('equal')
@@ -686,6 +710,3 @@ class Tracker:
     def _read_image(self, image_file: str):
         im = cv.imread(image_file)
         return cv.cvtColor(im, cv.COLOR_BGR2RGB)
-
-
-

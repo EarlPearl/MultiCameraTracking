@@ -33,10 +33,10 @@ def trackerlist(name: str, parameter_name: str, run_ids=None, display_name: str 
     """
     if run_ids is None or isinstance(run_ids, int):
         run_ids = [run_ids]
-    return [TrackerMV(name, parameter_name, run_id, display_name) for run_id in run_ids]
+    return [Tracker(name, parameter_name, run_id, display_name) for run_id in run_ids]
 
 
-class TrackerMV:
+class Tracker:
     """Wraps the tracker for evaluation and running purposes.
     args:
         name: Name of tracking method.
@@ -265,8 +265,8 @@ class TrackerMV:
             mp = list()
             for id in web_cam_ids:
                 p = Process(target=self.run_video_generic, args=(queue,),
-                                                  kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id},
-                                                  daemon=True)
+                            kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id},
+                            daemon=True)
                 p.start()
                 mp.append(p)
 
@@ -449,7 +449,6 @@ class TrackerMV:
             msg = "Select target(s). Press 'r' to reset or 'q' to quit."
             cv.rectangle(frame_disp, (5, 5), (630, 40), (50, 50, 50), -1)
             cv.putText(frame_disp, msg, (10, 30), cv.FONT_HERSHEY_COMPLEX_SMALL, 1, font_color, 2)
-
             if videofilepath is not None:
                 msg = "Press SPACE to pause/resume the video."
                 cv.rectangle(frame_disp, (5, 50), (530, 90), (50, 50, 50), -1)

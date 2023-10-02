@@ -1,6 +1,8 @@
 import torch.nn as nn
 import ltr.models.layers.filter as filter_layer
 import math
+import torch
+import pdb
 
 
 class LinearFilter(nn.Module):
@@ -11,7 +13,7 @@ class LinearFilter(nn.Module):
         filter_optimizer:  Filter optimizer module.
         feature_extractor:  Feature extractor module applied to the input backbone features."""
 
-    def __init__(self, filter_size, filter_initializer, filter_optimizer=None, feature_extractor=None):
+    def __init__(self, filter_size, filter_initializer, filter_optimizer=None, feature_extractor=None, transformer=None):
         super().__init__()
 
         self.filter_size = filter_size
@@ -21,26 +23,27 @@ class LinearFilter(nn.Module):
         self.filter_optimizer = filter_optimizer
         self.feature_extractor = feature_extractor
 
-        # Init weights
-        if self.feature_extractor:
-            for m in self.feature_extractor.modules():
-                if isinstance(m, nn.Conv2d):
-                    n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                    m.weight.data.normal_(0, math.sqrt(2. / n))
-                    if m.bias is not None:
-                        m.bias.data.zero_()
-                elif isinstance(m, nn.BatchNorm2d):
-                    m.weight.data.fill_(1)
-                    m.bias.data.zero_()
+        self.transformer = transformer
 
-    def forward(self, train_feat, test_feat, train_bb, *args, **kwargs):
+        # Init weights
+        for m in self.feature_extractor.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+    def forward(self, train_feat, test_feat, train_label, train_bb, *args, **kwargs):
         """Learns a target classification filter based on the train samples and return the resulting classification
         scores on the test samples.
         The forward function is ONLY used for training. Call the individual functions during tracking.
         args:
             train_feat:  Backbone features for the train samples (4 or 5 dims).
             test_feat:  Backbone features for the test samples (4 or 5 dims).
-            train_bb:  Target boxes (x,y,w,h) for the train samples in image coordinates. Dims (images, sequences, 4).
+            trian_bb:  Target boxes (x,y,w,h) for the train samples in image coordinates. Dims (images, sequences, 4).
             *args, **kwargs:  These are passed to the optimizer module.
         returns:
             test_scores:  Classification scores on the test samples."""
@@ -48,16 +51,34 @@ class LinearFilter(nn.Module):
         assert train_bb.dim() == 3
 
         num_sequences = train_bb.shape[1]
+        num_img_test = test_feat.shape[0] 
+
+        if train_feat.dim() == 5:
+            train_feat = train_feat.reshape(-1, *train_feat.shape[-3:])
+        if test_feat.dim() == 5:
+            test_feat = test_feat.reshape(-1, *test_feat.shape[-3:])
 
         # Extract features
         train_feat = self.extract_classification_feat(train_feat, num_sequences)
         test_feat = self.extract_classification_feat(test_feat, num_sequences)
 
-        # Train filter
-        filter, filter_iter, losses = self.get_filter(train_feat, train_bb, *args, **kwargs)
+        # 
+        encoded_feat, decoded_feat = self.transformer(train_feat, test_feat, train_label)
 
+        encoded_feat = encoded_feat.reshape(-1, num_sequences, *encoded_feat.shape[-3:])
+        decoded_feat = decoded_feat.reshape(-1, num_sequences, *decoded_feat.shape[-3:])
+
+        # Train filter
+        filter, filter_iter, losses = self.get_filter(encoded_feat, train_bb, *args, **kwargs)   
         # Classify samples using all return filters
-        test_scores = [self.classify(f, test_feat) for f in filter_iter]
+        test_scores = [self.classify(f, decoded_feat) for f in filter_iter]    ## test_feat
+
+        '''
+        # Train filter
+        filter, filter_iter, losses = self.get_filter(train_feat, train_bb, *args, **kwargs) 
+        # Classify samples using all return filters
+        test_scores = [self.classify(f, test_feat) for f in filter_iter]    ## test_feat
+        '''
 
         return test_scores
 
@@ -67,8 +88,7 @@ class LinearFilter(nn.Module):
             return feat
         if num_sequences is None:
             return self.feature_extractor(feat)
-        if feat.dim() == 5:
-            feat = feat.reshape(-1, *feat.shape[-3:])
+
         output = self.feature_extractor(feat)
         return output.reshape(-1, num_sequences, *output.shape[-3:])
 

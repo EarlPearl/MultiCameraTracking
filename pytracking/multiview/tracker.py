@@ -2,6 +2,7 @@ import importlib
 import os
 import threading
 
+import numpy
 import numpy as np
 from collections import OrderedDict
 from pytracking.evaluation.environment import env_settings
@@ -16,7 +17,8 @@ from ltr.data.bounding_box_utils import masks_to_bboxes
 from pytracking.evaluation.multi_object_wrapper import MultiObjectWrapper
 from pathlib import Path
 import torch
-from multiprocessing import Process, Queue, Manager
+from pytracking.features import preprocessing
+from multiprocessing import Process, Queue
 
 _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
@@ -64,7 +66,8 @@ class Tracker:
 
         tracker_module_abspath = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tracker', self.name))
         if os.path.isdir(tracker_module_abspath):
-            tracker_module = importlib.import_module('pytracking.tracker.{}'.format(self.name))
+            print("module")
+            tracker_module = importlib.import_module('pytracking.multiview.{}'.format(self.name))
             self.tracker_class = tracker_module.get_tracker_class()
         else:
             self.tracker_class = None
@@ -270,11 +273,17 @@ class Tracker:
                 p.start()
                 mp.append(p)
 
+            imageopen = True
             while True:
                 if not queue.empty():
-                    print("hei")
-                    item = queue.get()
-                    print("Object id: {}, state: {}".format(item[0], item[1]))
+                    tracker_output = queue.get()
+                    for obj_id, target_patch in tracker_output['target_patch'].items():
+                        if imageopen:
+                            image = preprocessing.torch_to_numpy(target_patch)
+                            cv.imshow('image', image)
+                            cv.waitKey()
+                            imageopen = False
+
                 if not all(p.is_alive() for p in mp):
                     break
             for p in mp:
@@ -440,10 +449,11 @@ class Tracker:
                                      _tracker_disp_colors[obj_id], 5)
                         if save_results:
                             output_boxes[obj_id].append(state)
-                        if not queue.full():
-                            queue.put((obj_id, state))
-                        else:
-                            print("Error: queue full")
+                    if not queue.full():
+                        queue.put(out)
+                    else:
+                        print("Error: queue full")
+
             # Put text
             font_color = (255, 255, 255)
             msg = "Select target(s). Press 'r' to reset or 'q' to quit."

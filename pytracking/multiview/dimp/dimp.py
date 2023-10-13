@@ -4,9 +4,9 @@ import torch.nn.functional as F
 import math
 import time
 from pytracking import dcf, TensorList
-from pytracking.features.preprocessing import numpy_to_torch
+from pytracking.features.preprocessing import numpy_to_torch, torch_to_numpy
 from pytracking.utils.plotting import show_tensor, plot_graph
-from pytracking.features.preprocessing import sample_patch_multiscale, sample_patch_transformed
+from pytracking.features.preprocessing import sample_patch_multiscale, sample_patch_transformed, sample_patch
 from pytracking.features import augmentation
 import ltr.data.bounding_box_utils as bbutils
 from ltr.models.target_classifier.initializer import FilterInitializerZero
@@ -87,7 +87,9 @@ class DiMP(BaseTracker):
         if self.params.get('use_iou_net', True):
             self.init_iou_net(init_backbone_feat)
 
-        out = {'time': time.time() - tic}
+        target_patch, _ = sample_patch(im, self.pos, self.target_sz)
+
+        out = {'time': time.time() - tic, 'target_patch': target_patch}
         return out
 
 
@@ -129,6 +131,7 @@ class DiMP(BaseTracker):
             elif self.params.get('use_classifier', True):
                 self.update_state(new_pos, sample_scales[scale_ind])
 
+        target_patch, _ = sample_patch(im, self.pos, self.target_sz)
         # ------- UPDATE ------- #
 
         update_flag = flag not in ['not_found', 'uncertain']
@@ -169,8 +172,7 @@ class DiMP(BaseTracker):
             output_state = [-1, -1, -1, -1]
         else:
             output_state = new_state.tolist()
-
-        out = {'target_bbox': output_state}
+        out = {'target_bbox': output_state, 'target_patch': target_patch}
         return out
 
 

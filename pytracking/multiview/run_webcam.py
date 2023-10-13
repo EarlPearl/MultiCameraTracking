@@ -1,14 +1,6 @@
 import os
 import sys
 import argparse
-from multiprocessing import Process, Queue, Manager
-import cv2 as cv
-from pytracking.utils.visdom import Visdom
-from pytracking.evaluation.multi_object_wrapper import MultiObjectWrapper
-import numpy as np
-from collections import OrderedDict
-from pytracking.utils.plotting import draw_figure, overlay_mask
-from pathlib import Path
 
 
 
@@ -42,26 +34,7 @@ def multi_view_multi_single_tracking():
 
     tracker = Tracker(args.tracker_name, args.tracker_param)
 
-    web_cam_ids = args.webcam_ids
-    queue = Queue(maxsize=1000)
-    mp = list()
-    for id in web_cam_ids:
-        p = Process(target=tracker.run_video_generic, args=(queue,),
-                    kwargs={"debug": args.debug, "visdom_info": visdom_info, "web_cam_id": id},
-                    daemon=True)
-        p.start()
-        mp.append(p)
-
-    while True:
-        if not queue.empty():
-            print("hei")
-            item = queue.get()
-            print("Object id: {}, state: {}".format(item[0], item[1]))
-        if not all(p.is_alive() for p in mp):
-            break
-    for p in mp:
-        p.join()
-    print("All processes finished")
+    tracker.run_video_generic_mv(debug=args.debug, visdom_info=visdom_info, web_cam_ids=args.webcam_ids)
 
 
 

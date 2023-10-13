@@ -151,6 +151,7 @@ class MultiObjectWrapper:
 
             out = self.trackers[obj_id].track(image, info)
 
+
             default = {'time': time.time() - start_time}
             out = self._set_defaults(out, default)
             out_all[obj_id] = out

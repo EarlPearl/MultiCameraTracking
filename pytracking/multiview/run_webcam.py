@@ -18,7 +18,7 @@ _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
                         7: (123, 123, 123), 8: (255, 128, 0), 9: (128, 0, 255)}
 
-def multi_view_multi_single_tracking():
+def multi_view_tracking():
     parser = argparse.ArgumentParser(description='Run the tracker on your webcam.')
     parser.add_argument('tracker_name', type=str, help='Name of tracking method.')
     parser.add_argument('tracker_param', type=str, help='Name of parameter file.')
@@ -39,4 +39,4 @@ def multi_view_multi_single_tracking():
 
 
 if __name__ == '__main__':
-    multi_view_multi_single_tracking()
+    multi_view_tracking()

@@ -1,3 +1,5 @@
+import PIL.Image
+
 from pytracking.tracker.base import BaseTracker
 import torch
 import torch.nn.functional as F
@@ -11,7 +13,10 @@ from pytracking.features import augmentation
 import ltr.data.bounding_box_utils as bbutils
 from ltr.models.target_classifier.initializer import FilterInitializerZero
 from ltr.models.layers import activation
-
+import torchvision
+import cv2 as cv
+import numpy as np
+from pytracking.features import preprocessing
 
 class DiMP(BaseTracker):
 
@@ -33,12 +38,16 @@ class DiMP(BaseTracker):
 
         # The DiMP network
         self.net = self.params.net
+        self.imageOpen = True
+        self.count = 0
 
         # Time initialization
         tic = time.time()
 
+        #image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
         # Convert image
         im = numpy_to_torch(image)
+
 
         # Get target position and size
         state = info['init_bbox']
@@ -172,6 +181,25 @@ class DiMP(BaseTracker):
             output_state = [-1, -1, -1, -1]
         else:
             output_state = new_state.tolist()
+
+        # if self.imageOpen:
+        #     self.imageOpen = False
+        #     print(self.count)
+        #     self.count += 1
+        #     img = torchvision.transforms.ToTensor()(image)
+        #     #img = numpy_to_torch(image)
+        #     img = im.squeeze(0).numpy()
+        #     numpy_image = np.transpose(img, (1,2,0))
+        #     print(numpy_image)
+        #     #img = torchvision.transforms.ToPILImage()(img.squeeze(0))
+        #     #img.show()
+        #     im_rgb = cv.cvtColor(numpy_image, cv.COLOR_BGR2RGB)
+        #     #img_2 = PIL.Image.fromarray(img, 'RGB')
+        #     #img_2.show()
+        #     img_norm = numpy_image/255
+        #     ims = cv.resize(img_norm, (1000, 600))
+        #     cv.imshow('bilde', ims)
+
         out = {'target_bbox': output_state, 'target_patch': target_patch}
         return out
 

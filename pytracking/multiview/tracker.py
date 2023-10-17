@@ -16,9 +16,10 @@ from pytracking.utils.convert_vot_anno_to_rect import convert_vot_anno_to_rect
 from ltr.data.bounding_box_utils import masks_to_bboxes
 from pytracking.evaluation.multi_object_wrapper import MultiObjectWrapper
 from pathlib import Path
-import torch
+import torch, torchvision
 from pytracking.features import preprocessing
 from multiprocessing import Process, Queue
+from PIL import Image
 
 _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
@@ -261,11 +262,12 @@ class Tracker:
 
         return output
 
+
     def run_video_generic_mv(self, debug=None, visdom_info=None, videofilepaths=None, optional_box=None,
                              save_results=False, web_cam_ids=None):
         queue = Queue(maxsize=1000)
+        mp = list()
         if videofilepaths is None:
-            mp = list()
             for id in web_cam_ids:
                 p = Process(target=self.run_video_generic, args=(queue,),
                             kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id},
@@ -273,22 +275,39 @@ class Tracker:
                 p.start()
                 mp.append(p)
 
-            imageopen = True
+        else:
+            for path in videofilepaths:
+                p = Process(target=self.run_video_generic, args=(queue,),
+                            kwargs={"debug": debug, "videofilepath": path},
+                            daemon=True)
+                p.start()
+                mp.append(p)
+        imageopen = False
+        if len(mp) > 0:
             while True:
                 if not queue.empty():
                     tracker_output = queue.get()
                     for obj_id, target_patch in tracker_output['target_patch'].items():
-                        if imageopen:
+                        if not imageopen:
                             image = preprocessing.torch_to_numpy(target_patch)
-                            cv.imshow('image', image)
-                            cv.waitKey()
-                            imageopen = False
+                            img_norm = image / 255
+                            im_resize = cv.resize(img_norm, (1000, 600))
+                            imageopen = True
 
                 if not all(p.is_alive() for p in mp):
                     break
+                if imageopen:
+                    cv.imshow('bilde', im_resize)
+
+                key = cv.waitKey(1)
+                if key == ord('q'):
+                    break
+
+            cv.destroyAllWindows()
             for p in mp:
                 p.join()
             print("All processes finished")
+
 
     def run_video_generic(self, queue, debug=None, visdom_info=None, videofilepath=None, optional_box=None,
                           save_results=False, web_cam_id=None):

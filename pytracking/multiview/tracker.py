@@ -2,6 +2,7 @@ import importlib
 import os
 import threading
 
+import cv2
 import numpy
 import numpy as np
 from collections import OrderedDict
@@ -9,6 +10,7 @@ from pytracking.evaluation.environment import env_settings
 import time
 import cv2 as cv
 from pytracking.utils.visdom import Visdom
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from pytracking.utils.plotting import draw_figure, overlay_mask
@@ -20,10 +22,24 @@ import torch, torchvision
 from pytracking.features import preprocessing
 from multiprocessing import Process, Queue
 from PIL import Image
+import Siamese_network
+import torchvision.transforms as transforms
+import torch.nn.functional as F
 
 _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
                         7: (123, 123, 123), 8: (255, 128, 0), 9: (128, 0, 255)}
+
+def imshow(img, text=None):
+    npimg = img.numpy()
+    plt.axis("off")
+    if text:
+        plt.text(75, 8, text, style='italic', fontweight='bold',
+                 bbox={'facecolor': 'white', 'alpha': 0.8, 'pad': 10})
+
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    plt.show()
+
 
 
 def trackerlist(name: str, parameter_name: str, run_ids=None, display_name: str = None):
@@ -267,37 +283,41 @@ class Tracker:
                              save_results=False, web_cam_ids=None):
         queue = Queue(maxsize=1000)
         mp = list()
-        if videofilepaths is None:
+
+        if videofilepaths is None:  # Create multiple instances of webcam
             for id in web_cam_ids:
                 p = Process(target=self.run_video_generic, args=(queue,),
-                            kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id},
+                            kwargs={"debug": debug, "visdom_info": visdom_info, "web_cam_id": id, "tracker_id": len(mp)},
                             daemon=True)
                 p.start()
                 mp.append(p)
 
-        else:
+        else:  # Create multiple instances of videofile
             for path in videofilepaths:
                 p = Process(target=self.run_video_generic, args=(queue,),
-                            kwargs={"debug": debug, "videofilepath": path},
+                            kwargs={"debug": debug, "videofilepath": path, "tracker_id": len(mp)},
                             daemon=True)
                 p.start()
                 mp.append(p)
         imageopen = False
+        Images = OrderedDict
+        Images = {i: list() for i in range(len(mp))}
         if len(mp) > 0:
             while True:
                 if not queue.empty():
                     tracker_output = queue.get()
                     for obj_id, target_patch in tracker_output['target_patch'].items():
-                        if not imageopen:
-                            image = preprocessing.torch_to_numpy(target_patch)
-                            img_norm = image / 255
-                            im_resize = cv.resize(img_norm, (1000, 600))
-                            imageopen = True
+                        Images[tracker_output['tracker_id']].append(target_patch)
+                        # if not imageopen:
+                        #     image = preprocessing.torch_to_numpy(target_patch)
+                        #     img_norm = image / 255
+                        #     im_resize = cv.resize(img_norm, (1000, 600))
+                        #     imageopen = True
 
                 if not all(p.is_alive() for p in mp):
                     break
-                if imageopen:
-                    cv.imshow('bilde', im_resize)
+                # if imageopen:
+                #    cv.imshow('bilde', im_resize)
 
                 key = cv.waitKey(1)
                 if key == ord('q'):
@@ -306,10 +326,35 @@ class Tracker:
             cv.destroyAllWindows()
             for p in mp:
                 p.join()
-            print("All processes finished")
+            print("All tracking processes finished")
+            # transformation = transforms.Compose([transforms.Resize((100, 100)),
+            #                                      transforms.ToTensor()
+            #                                      ])
+            transformation = transforms.Resize((100, 100), antialias=False)
+            net = Siamese_network.SiameseNetwork(backbone='resnet18').cuda()
+            net.load_model()
+            images1 = Images[0]
+            images2 = Images[1]
+            for i in range(min(len(images1), len(images2), 5)):
+                img1 = transformation(images1[i])/255
+                img2 = transformation(images2[i])/255
+                concatenated = torch.cat((img1, img2), 0)
+                out1, out2 = net.forward(img1.cuda(), img2.cuda())
+                euclidean_distance = F.pairwise_distance(out1, out2)
+                print(euclidean_distance.item())
+                image = np.transpose(torchvision.utils.make_grid(concatenated).numpy(), (1, 2, 0))
+                cv.imshow(f'Dissimilarity: {euclidean_distance.item():.2f}', image)
+            cv.waitKey()
+            cv.destroyAllWindows()
 
 
-    def run_video_generic(self, queue, debug=None, visdom_info=None, videofilepath=None, optional_box=None,
+    def bgr_to_rgb(self, image_tensor):
+        image = preprocessing.torch_to_numpy(image_tensor)
+        image = cv.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return transforms.ToTensor()(image)
+
+
+    def run_video_generic(self, queue, tracker_id,debug=None, visdom_info=None, videofilepath=None, optional_box=None,
                           save_results=False, web_cam_id=None):
         """Run the tracker with the webcam or a provided video file.
         args:
@@ -469,6 +514,7 @@ class Tracker:
                         if save_results:
                             output_boxes[obj_id].append(state)
                     if not queue.full():
+                        out['tracker_id'] = tracker_id
                         queue.put(out)
                     else:
                         print("Error: queue full")

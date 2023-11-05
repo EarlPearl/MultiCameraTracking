@@ -6,7 +6,7 @@ env_path = os.path.join(os.path.dirname(__file__), '../..')
 if env_path not in sys.path:
     sys.path.append(env_path)
 
-from tracker import Tracker
+from multi_camera_tracker import Tracker
 
 def list_of_strings(arg):
     return list(map(str, arg.split(':')))
@@ -55,7 +55,15 @@ def multi_view_tracking():
     tracker = Tracker(args.tracker_name, args.tracker_param)
     tracker.run_videofile_multiview(frame_count=1000,videofilepaths=args.videofiles, optional_box=args.optional_box, debug=args.debug, save_results=args.save_results)
 
+def multi_camera_dataset():
+    parser = argparse.ArgumentParser(description='Evaluate annoated dataset with video')
+    parser.add_argument('folder_path', type=str, help='Path to root folder of dataset')
+    args = parser.parse_args()
+    tracker = Tracker()
+
+    tracker.run_mc_dataset(args.folder_path)
+
 
 
 if __name__ == '__main__':
-    multi_view_tracking()
+    multi_camera_dataset()

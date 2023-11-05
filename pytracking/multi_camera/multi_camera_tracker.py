@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import threading
 
@@ -23,9 +24,18 @@ import torch, torchvision
 from pytracking.features import preprocessing
 from multiprocessing import Process, Queue
 from PIL import Image
-import Siamese_network
+from Siamese_network import SiameseNetwork
 import torchvision.transforms as transforms
 import torch.nn.functional as F
+from pathlib import Path
+import xml.etree.ElementTree as ET
+from torch.utils.data import Dataset
+from torchvision.io import read_image
+from torchvision.transforms.functional import crop
+import csv
+import pandas as pd
+import ast
+from munkres import Munkres, print_matrix
 
 _tracker_disp_colors = {1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 0, 0),
                         4: (255, 255, 255), 5: (0, 0, 0), 6: (0, 255, 128),
@@ -50,8 +60,8 @@ class Tracker:
 
         env = env_settings()
 
-        self.mc_tracker = Siamese_network()
-        self.mc_tracker.load()
+        self.mc_tracker = SiameseNetwork(backbone='resnet18').cuda()
+        self.mc_tracker.load_model()
 
         if sc_tracker is not None:
             tracker_module_abspath = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tracker',
@@ -62,7 +72,95 @@ class Tracker:
             else:
                 self.sc_tracker_class = None
 
-    def run_mc_dataset(self):
+    def run_mc_dataset(self, folder):
+        datasets = CVAT_MC_Dataset_Wrapper(folder).data_sets
+
+        camera_1 = datasets['DJI_Mini']
+        camera_2 = datasets['DJI_Phantom']
+
+        frames = min(len(camera_1), len(camera_2))
+        print(frames)
+        num_result = 0
+        num_fail = 0
+        result_frame = list()
+
+        for i in range(1):
+            image1, label1 = camera_1[i]
+            image2, label2 = camera_2[i]
+            resize = transforms.Resize((100, 100))
+            cost_row = 0
+            scores = dict()
+            for id1, track1 in label1.items():
+                if track1['occluded'] == 1:
+                    continue
+                cost_column = 0
+                best_score = tuple()
+                for id2, track2 in label2.items():
+                    if track2['occluded'] == 1:
+                        continue
+                    patch1 = resize(crop(image1, track1['ytl'], track1['xtl'], abs(track1['ytl']-track1['ybr']),
+                                         abs(track1['xbr']-track1['xtl']))).float().unsqueeze(0)/255
+                    patch2 = resize(crop(image2, track2['ytl'], track2['xtl'], abs(track2['ytl']-track2['ybr']),
+                                         abs(track2['xbr']-track2['xtl']))).float().unsqueeze(0)/255
+
+                    if int(id1) == 0 and int(id2) == 0:
+                        img1 = transforms.functional.to_pil_image(patch1.squeeze(0))
+                        img1.show()
+                        img2 = transforms.functional.to_pil_image(patch2.squeeze(0))
+                        img2.show()
+
+                    out1, out2 = self.mc_tracker.forward(patch1.cuda(), patch2.cuda())
+                    euclidean_distance = F.pairwise_distance(out1, out2).item()
+                    scores[(cost_row, cost_column)] = (id1, id2, euclidean_distance)
+                    if best_score:
+                        if euclidean_distance <= best_score[2]:
+                            best_score = (id1, id2, euclidean_distance)
+                    else:
+                        best_score = (id1, id2, euclidean_distance)
+                    cost_column += 1
+                cost_row += 1
+                print(best_score)
+
+            # opt_matching = self.optimal_matching(cost_row, cost_column, scores)
+
+
+    @staticmethod
+    def optimal_matching(rows, columns, scores):
+        cost_matrix = np.empty((rows, columns))
+        if cost_matrix.shape[0] != cost_matrix.shape[1]:
+            if cost_matrix.shape[0] > cost_matrix.shape[1]:
+                cost_matrix = np.hstack((cost_matrix, np.zeros((cost_matrix.shape[0], 1))))
+            else:
+                cost_matrix = np.vstack((cost_matrix, np.zeros((1, cost_matrix.shape[1]))))
+        print(cost_matrix.shape)
+        print(cost_matrix)
+        for key, value in scores.items():
+            cost_matrix[key[0], key[1]] = value[2]
+        m = Munkres()
+        optimal_indexes = m.compute(cost_matrix)
+        optimal_matches = dict()
+        for row, col in optimal_indexes:
+            if (row, col) in scores:
+                match = scores[(row, col)]
+                optimal_matches[(match[0], match[1])] = match[2]
+        return optimal_matches
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     def run_mc_video_live(self, debug=None, visdom_info=None, videofilepaths=None, optional_box=None,
@@ -601,6 +699,7 @@ class UIControl:
             self.mode = 'select'
         elif event == cv.EVENT_MOUSEMOVE and self.mode == 'select':
             self.target_br = (x, y)
+            # img = transforms.ToPILI
         elif event == cv.EVENT_LBUTTONDOWN and self.mode == 'select':
             self.target_br = (x, y)
             self.mode = 'init'
@@ -615,14 +714,102 @@ class UIControl:
     def get_bb(self):
         tl = self.get_tl()
         br = self.get_br()
-
         bb = [min(tl[0], br[0]), min(tl[1], br[1]), abs(br[0] - tl[0]), abs(br[1] - tl[1])]
         return bb
 
 
-class CVatAnnonationWrapper:
-    def __init__(self, folder):
-        self.root = folder
+class CVAT_MC_Dataset_Wrapper:
+    def __init__(self, folder, transform=None):
+        self.root = Path(folder)
+        self.data_sets = dict()
+        for item in self.root.iterdir():
+            self.data_sets[item.name] = CVat_ImageDataset(item, transform)
+
+
+class CVat_ImageDataset(Dataset):
+    def __init__(self, folder, transform=None, target_transform=None):
+        self.transform = transform
+        self.target_transform = target_transform
+        self.image_dir = f"{folder}/frames"
+        self.annontation_file = f"{folder}/annotations.csv"
+        root = ET.parse(f"{folder}/annotations.xml").getroot()
+        start_frame = int(root.find('meta/job/start_frame').text)
+        stop_frame = int(root.find('meta/job/stop_frame').text)
+        if not os.path.exists(self.image_dir):
+            print(f"No image directory found in {folder}. Converting video to image frames...")
+            video = f"{folder}/{root.find('meta/videofilename').text}"
+            os.makedirs(self.image_dir)
+            cap = cv.VideoCapture(video)
+            ret, frame = cap.read()
+            count = 0
+            index = 0
+            while ret:
+                if start_frame <= count <= stop_frame:
+                    cv.imwrite(f"{self.image_dir}/frame_{index}.jpg", frame)
+                    index += 1
+                ret, frame = cap.read()
+                count += 1
+
+            cap.release()
+            print(f"Finished converting video to frames. {index} frames created.")
+
+        if not os.path.exists(self.annontation_file):
+            print("No annontation.csv found. Collecting annontations from annontations.xml..")
+            data_keys = ['occluded', 'xtl', 'ytl', 'xbr', 'ybr']
+
+            labels = dict()
+
+            for track in root.iter('track'):
+                track_id = int(track.attrib['id'])
+                for bbx in track.iter('box'):
+                    track_data = {key: int(float(bbx.attrib[key])) for key in data_keys if key in bbx.attrib}
+                    frame = int(bbx.attrib['frame'])
+                    if frame not in labels:
+                        labels[frame] = dict()
+                    labels[frame][track_id] = track_data
+            count = 0
+            index = 0
+            mod_labels = dict()
+            for frame, track in labels.items():
+                if start_frame <= count <= stop_frame:
+                    mod_labels[index] = track
+                    index += 1
+                count += 1
+            df = pd.DataFrame.from_dict(mod_labels, orient='index')
+            df.to_csv(self.annontation_file,  index=False)
+
+        self.img_labels = pd.read_csv(self.annontation_file)
+    def __len__(self):
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        img_path = f"{self.image_dir}/frame_{idx}.jpg"
+        image = read_image(img_path)
+        label = self.data_series_to_nested_dict(self.img_labels.loc[idx])
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            label = self.target_transform(label)
+        return image, label
+
+    @staticmethod
+    def data_series_to_nested_dict(series):
+        n_dict = dict()
+        for key, value in dict(series).items():
+            if type(value) is str:
+                n_dict[key] = ast.literal_eval(value)
+        return n_dict
+
+
+
+
+
+
+
+
+
+
+
 
 
 
